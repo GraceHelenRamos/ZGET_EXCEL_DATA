@@ -1,0 +1,387 @@
+*&---------------------------------------------------------------------*
+*&      Form  ZF_FILL_NAME_BUTTON
+*&---------------------------------------------------------------------*
+FORM zf_fill_name_button .
+
+  DATA:lw_functxt TYPE smp_dyntxt.
+
+  CLEAR:lw_functxt.
+
+  lw_functxt-icon_id = icon_protocol.
+  lw_functxt-quickinfo = TEXT-t06.
+  lw_functxt-icon_text = TEXT-t06.
+  sscrfields-functxt_01 = lw_functxt.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  zf_handle_at_selection_screen
+*&---------------------------------------------------------------------*
+FORM zf_handle_at_selection_screen .
+  CLEAR: v_alv_log_grid,
+         v_alv_log_cont,
+         t_alv_log.
+
+  CASE sy-ucomm.
+    WHEN 'FC01'.
+      PERFORM zf_process_data_excel.
+    WHEN OTHERS.
+  ENDCASE.
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  zf_process_data_excel
+*&---------------------------------------------------------------------*
+FORM zf_process_data_excel.
+
+  DATA: lt_excel TYPE y_t_excel,
+        lt_marc  TYPE y_t_marc.
+
+  PERFORM  zf_get_data_excel CHANGING lt_excel.
+  IF lt_excel IS INITIAL.
+    MESSAGE s028 DISPLAY LIKE c_message_type-error.
+    RETURN.
+  ENDIF.
+
+ * PERFORM zf_call_conv_exit_alpha_input CHANGING lt_excel.
+
+*  PERFORM zf_read_marc_by_excel USING lt_excel
+*                               CHANGING lt_marc.
+
+*  PERFORM zf_material_savedata USING  lt_excel
+*                                      lt_marc.
+
+*  IF t_alv_log IS INITIAL.
+*    MESSAGE s028 DISPLAY LIKE 'E'.
+*   RETURN.
+* ENDIF.
+
+ * CALL SCREEN 9010.
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  ZF_GET_DATA_EXCEL
+*&---------------------------------------------------------------------*
+FORM zf_get_data_excel CHANGING pt_excel TYPE y_t_excel.
+
+  DATA:
+    l_headerxstring TYPE xstring,
+    l_filename      TYPE string,
+    l_filelength    TYPE i,
+    lt_records      TYPE solix_tab,
+    l_excel_ref     TYPE REF TO cl_fdt_xl_spreadsheet,
+    lt_worksheets   TYPE if_fdt_doc_spreadsheet=>t_worksheet_names,
+    l_window_title  TYPE string,
+    lt_filetable    TYPE  filetable,
+    l_return_code   TYPE i.
+
+  FIELD-SYMBOLS: <fs_excel_data> TYPE STANDARD TABLE.
+
+  CALL METHOD cl_gui_frontend_services=>file_open_dialog
+    EXPORTING
+      window_title = l_window_title
+    CHANGING
+      file_table   = lt_filetable
+      rc           = l_return_code.
+
+  READ TABLE lt_filetable ASSIGNING FIELD-SYMBOL(<fs_filetable>) INDEX 1.
+  IF sy-subrc IS NOT INITIAL. RETURN. ENDIF.
+
+  l_filename = <fs_filetable>.
+
+  CALL FUNCTION 'GUI_UPLOAD'
+    EXPORTING
+      filename                = l_filename
+      filetype                = 'BIN'
+    IMPORTING
+      filelength              = l_filelength
+      header                  = l_headerxstring
+    TABLES
+      data_tab                = lt_records
+    EXCEPTIONS
+      file_open_error         = 1
+      file_read_error         = 2
+      no_batch                = 3
+      gui_refuse_filetransfer = 4
+      invalid_type            = 5
+      no_authority            = 6
+      unknown_error           = 7
+      bad_data_format         = 8
+      header_not_allowed      = 9
+      separator_not_allowed   = 10
+      header_too_long         = 11
+      unknown_dp_error        = 12
+      access_denied           = 13
+      dp_out_of_memory        = 14
+      disk_full               = 15
+      dp_timeout              = 16
+      OTHERS                  = 17.
+
+  IF sy-subrc IS NOT INITIAL.
+    MESSAGE ID sy-msgid TYPE 'S' NUMBER sy-msgno
+            WITH sy-msgv1 sy-msgv2 sy-msgv3 sy-msgv4
+       DISPLAY LIKE sy-msgty.
+    RETURN.
+  ENDIF.
+
+  PERFORM zf_convert_scms_binary_xstring USING l_filelength
+                                              CHANGING l_headerxstring
+                                                       lt_records.
+  TRY.
+      l_excel_ref = NEW cl_fdt_xl_spreadsheet(
+                                 document_name = l_filename
+                                 xdocument     = l_headerxstring ) .
+    CATCH cx_fdt_excel_core.
+      MESSAGE ID sy-msgid TYPE 'S' NUMBER sy-msgno
+      WITH sy-msgv1 sy-msgv2 sy-msgv3 sy-msgv4
+      DISPLAY LIKE sy-msgty.
+      RETURN.
+  ENDTRY .
+
+  l_excel_ref->if_fdt_doc_spreadsheet~get_worksheet_names(
+     IMPORTING
+       worksheet_names = lt_worksheets ).
+
+  IF NOT lt_worksheets IS INITIAL.
+    READ TABLE lt_worksheets ASSIGNING FIELD-SYMBOL(<fs_woksheetname>) INDEX 1.
+
+    DATA(l_data_ref) = l_excel_ref->if_fdt_doc_spreadsheet~get_itab_from_worksheet(
+                                             <fs_woksheetname> ).
+    ASSIGN l_data_ref->* TO <fs_excel_data>.
+
+    IF sy-subrc IS INITIAL.
+
+      PERFORM zf_split_excel_tab USING <fs_excel_data>
+                              CHANGING pt_excel.
+    ENDIF.
+  ENDIF.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  ZF_CONVERT_SCMS_BINARY_XSTRING
+*&---------------------------------------------------------------------*
+FORM zf_convert_scms_binary_xstring  USING    p_filelength    TYPE i
+                                     CHANGING p_headerxstring TYPE xstring
+                                              pt_records      TYPE solix_tab.
+
+  CALL FUNCTION 'SCMS_BINARY_TO_XSTRING'
+    EXPORTING
+      input_length = p_filelength
+    IMPORTING
+      buffer       = p_headerxstring
+    TABLES
+      binary_tab   = pt_records
+    EXCEPTIONS
+      failed       = 1
+      OTHERS       = 2.
+  IF sy-subrc IS NOT INITIAL.
+    MESSAGE ID sy-msgid TYPE 'S' NUMBER sy-msgno
+            WITH sy-msgv1 sy-msgv2 sy-msgv3 sy-msgv4
+       DISPLAY LIKE sy-msgty.
+    RETURN.
+  ENDIF.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  ZF_SPLIT_EXCEL_TAB
+*&---------------------------------------------------------------------*
+FORM zf_split_excel_tab USING pt_excel_data TYPE STANDARD TABLE
+                     CHANGING pt_excel      TYPE y_t_excel.
+
+  DATA: lw_convert LIKE LINE OF pt_excel.
+
+  CLEAR: pt_excel.
+
+  LOOP AT pt_excel_data  ASSIGNING FIELD-SYMBOL(<fs_excel_line_data>) FROM 2.
+    CLEAR:lw_convert.
+
+    ASSIGN COMPONENT 'A' OF STRUCTURE <fs_excel_line_data> TO FIELD-SYMBOL(<fs_matnr>).
+    IF sy-subrc IS INITIAL.
+      lw_convert-matnr = <fs_matnr>.
+    ENDIF.
+
+    ASSIGN COMPONENT 'B' OF STRUCTURE <fs_excel_line_data> TO FIELD-SYMBOL(<fs_maktx>).
+    IF sy-subrc IS INITIAL .
+      lw_convert-maktx = <fs_maktx>.
+    ENDIF.
+
+    ASSIGN COMPONENT 'C' OF STRUCTURE <fs_excel_line_data> TO FIELD-SYMBOL(<fs_werks>).
+    IF sy-subrc IS INITIAL.
+      lw_convert-werks = <fs_werks>.
+    ENDIF.
+
+    ASSIGN COMPONENT 'D' OF STRUCTURE <fs_excel_line_data> TO FIELD-SYMBOL(<fs_prgrp>).
+    IF sy-subrc IS INITIAL .
+      lw_convert-prgrp = <fs_prgrp>.
+    ENDIF.
+
+    ASSIGN COMPONENT 'E' OF STRUCTURE <fs_excel_line_data> TO FIELD-SYMBOL(<fs_mtart>).
+    IF sy-subrc IS INITIAL .
+      lw_convert-mtart = <fs_mtart>.
+    ENDIF.
+
+    ASSIGN COMPONENT 'F' OF STRUCTURE <fs_excel_line_data> TO FIELD-SYMBOL(<fs_reserve_quantity>).
+    IF sy-subrc IS INITIAL .
+      lw_convert-reserve_quantity = <fs_reserve_quantity>.
+    ENDIF.
+    ASSIGN COMPONENT 'G' OF STRUCTURE <fs_excel_line_data> TO FIELD-SYMBOL(<fs_eisbe>).
+    IF sy-subrc IS INITIAL .
+      lw_convert-eisbe = <fs_eisbe>.
+    ENDIF.
+
+    ASSIGN COMPONENT 'H' OF STRUCTURE <fs_excel_line_data> TO FIELD-SYMBOL(<fs_buffer_inventory>).
+    IF sy-subrc IS INITIAL .
+      lw_convert-buffer_inventory = <fs_buffer_inventory>.
+    ENDIF.
+
+    ASSIGN COMPONENT 'I' OF STRUCTURE <fs_excel_line_data> TO FIELD-SYMBOL(<fs_deposit_cycle>).
+    IF sy-subrc IS INITIAL .
+      lw_convert-deposit_cycle = <fs_deposit_cycle>.
+    ENDIF.
+
+    ASSIGN COMPONENT 'J' OF STRUCTURE <fs_excel_line_data> TO FIELD-SYMBOL(<fs_deposit_maximum>).
+    IF sy-subrc IS INITIAL .
+      lw_convert-deposit_maximum = <fs_deposit_maximum>.
+    ENDIF.
+
+    ASSIGN COMPONENT 'K' OF STRUCTURE <fs_excel_line_data> TO FIELD-SYMBOL(<fs_max_registered_deposit>).
+    IF sy-subrc IS INITIAL .
+      lw_convert-maximum_registered_deposit = <fs_max_registered_deposit>.
+    ENDIF.
+
+    ASSIGN COMPONENT 'L' OF STRUCTURE <fs_excel_line_data> TO FIELD-SYMBOL(<fs_minbe>).
+    IF sy-subrc IS INITIAL .
+      lw_convert-minbe = <fs_minbe>.
+    ENDIF.
+
+    ASSIGN COMPONENT 'M' OF STRUCTURE <fs_excel_line_data> TO FIELD-SYMBOL(<fs_changed_line>).
+    IF sy-subrc IS INITIAL .
+      lw_convert-changed_line = <fs_changed_line>.
+    ENDIF.
+
+    APPEND lw_convert TO pt_excel.
+
+  ENDLOOP.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  ZF_CALL_CONV_EXIT_ALPHA_INPUT
+*&---------------------------------------------------------------------*
+FORM zf_call_conv_exit_alpha_input CHANGING pt_excel TYPE y_t_excel.
+
+  LOOP AT pt_excel ASSIGNING FIELD-SYMBOL(<fs_excel>).
+
+    CALL FUNCTION 'CONVERSION_EXIT_ALPHA_INPUT'
+      EXPORTING
+        input  = <fs_excel>-matnr
+      IMPORTING
+        output = <fs_excel>-matnr.
+  ENDLOOP.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  ZF_READ_MARC_BY_EXCEL
+*&---------------------------------------------------------------------*
+FORM zf_read_marc_by_excel USING pt_excel TYPE y_t_excel
+                        CHANGING pt_marc  TYPE y_t_marc.
+
+  CLEAR:pt_marc.
+  IF pt_excel IS INITIAL. RETURN.ENDIF.
+
+  SELECT  matnr werks dispo maabc
+          bstmi dzeit webaz takzt eisbe
+          mabst minbe dismm
+   FROM marc
+   INTO TABLE pt_marc
+    FOR ALL ENTRIES IN pt_excel
+  WHERE matnr EQ pt_excel-matnr
+    AND werks EQ pt_excel-werks.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  ZF_MATERIAL_SAVEDATA
+*&---------------------------------------------------------------------*
+FORM zf_material_savedata USING pt_excel  TYPE y_t_excel
+                                pt_marc   TYPE y_t_marc.
+
+  DATA: lw_headdata   TYPE bapimathead,
+        lw_plantdata  TYPE bapi_marc,
+        lw_plantdatax TYPE bapi_marcx,
+        lw_mktregspmc TYPE ztbpp_mktregspmc,
+        lw_log        LIKE LINE OF t_alv_log,
+        lw_return     TYPE bapiret2.
+
+  LOOP AT pt_excel ASSIGNING FIELD-SYMBOL(<fs_excel>).
+    CLEAR:lw_mktregspmc, lw_headdata, lw_plantdata, lw_plantdatax, lw_return.
+
+    lw_headdata-material    = <fs_excel>-matnr.
+    lw_headdata-mrp_view    = abap_true.
+
+    READ TABLE pt_marc ASSIGNING FIELD-SYMBOL(<fs_marc>) WITH KEY matnr = <fs_excel>-matnr
+                                                                  werks = <fs_excel>-werks.
+    IF sy-subrc IS INITIAL.
+
+      IF <fs_marc>-dismm = c_mrp_denomination-man_reorder_point_pln OR <fs_excel>-minbe IS INITIAL.
+        CONCATENATE TEXT-t09  lw_headdata-material TEXT-t10 INTO lw_log-message SEPARATED BY ' '.
+        lw_log-type    = c_message_type-error.
+      ELSE.
+
+        lw_plantdata-plant      = <fs_excel>-werks.
+        lw_plantdata-max_stock  = <fs_excel>-deposit_maximum.
+        lw_plantdata-reorder_pt = <fs_excel>-minbe.
+        lw_plantdata-safety_stk = <fs_excel>-eisbe.
+
+        lw_plantdatax-plant      = <fs_excel>-werks.
+        lw_plantdatax-max_stock  = abap_true.
+        lw_plantdatax-reorder_pt = abap_true.
+        lw_plantdatax-safety_stk = abap_true.
+
+        CALL FUNCTION 'BAPI_MATERIAL_SAVEDATA'
+          EXPORTING
+            headdata      = lw_headdata
+            plantdata     = lw_plantdata
+            plantdatax    = lw_plantdatax
+            flag_online   = abap_false
+            flag_cad_call = abap_false
+          IMPORTING
+            return        = lw_return.
+      ENDIF.
+
+      IF lw_return-type EQ c_message_type-error.
+
+        PERFORM zf_message_getdetail USING lw_headdata-material
+                                           lw_plantdata-plant
+                                   CHANGING  lw_return.
+        CALL FUNCTION 'BAPI_TRANSACTION_ROLLBACK'.
+      ELSE.
+
+        PERFORM zf_message_getdetail USING lw_headdata-material
+                                           lw_plantdata-plant
+                                   CHANGING lw_return.
+        PERFORM zf_bapi_commit.
+
+        MOVE-CORRESPONDING <fs_excel> TO lw_mktregspmc .
+        lw_mktregspmc-aedat  = sy-datum.
+        lw_mktregspmc-aenam  = sy-uname.
+        lw_mktregspmc-aezeit = sy-uzeit.
+
+        MODIFY ztbpp_mktregspmc FROM lw_mktregspmc.
+        COMMIT WORK.
+
+      ENDIF.
+    ENDIF.
+  ENDLOOP.
+ENDFORM.
+*&---------------------------------------------------------------------*
+*       Bapi retorna menssagem
+*----------------------------------------------------------------------*
+FORM zf_message_getdetail USING l_material TYPE bapimathead-material
+                                l_werks    TYPE bapi_marc-plant
+                       CHANGING lw_return TYPE bapiret2.
+
+  DATA: lw_log LIKE LINE OF t_alv_log.
+
+  lw_log-message = lw_return-message.
+  lw_log-werks = l_werks.
+  lw_log-matnr = l_material.
+  lw_log-type  = lw_return-type.
+  APPEND lw_log TO t_alv_log.
+
+ENDFORM.                    " Message_getdetail
